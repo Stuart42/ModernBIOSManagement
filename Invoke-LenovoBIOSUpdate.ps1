@@ -24,7 +24,7 @@
     Author:      Maurice Daly / Nickolaj Andersen
     Contact:     @modaly_it / @NickolajA
     Created:     2017-06-09
-    Updated:     2019-05-14
+    Updated:     2025-01-06
 
     Version history:
     1.0.0 - (2017-06-09) Script created
@@ -38,6 +38,7 @@
 	1.0.8 - (2019-05-01) Fixed a bug where the script would show an error and fail if the WinUPTP log file could not be found
 	1.0.9 - (2019-05-14) Handle $Password to check if empty string or null instead of just null value
     1.1.0 - (2022-08-16) Revised handling for flash utility detection
+    1.2.0 - (2025-01-06) Revised handling for WinPEUPTP flash file (Script returns exit code 1 if in WinPE and file is found, store output in a variable and use it to attempt again in FullOS)
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
@@ -128,12 +129,22 @@ Process {
 
     switch ([Environment]::Is64BitOperatingSystem) {
         $true {
+            $WinPEUPTPUtilityFilter = @('WinPEUPTP.exe')
             $WinUPTPUtilityFilter = @('WinUPTP.exe', 'WinUPTP64.exe')
             $FlashCMDUtilityFilter = @('Flash.cmd', 'Flash64.cmd')
         }
         $false {
+            $WinPEUPTPUtilityFilter = @('WinPEUPTP.exe')
             $WinUPTPUtilityFilter = @('WinUPTP.exe')
             $FlashCMDUtilityFilter = @('Flash.cmd')
+        }
+    }
+
+    $WinPEUPTPUtilityFilter | ForEach-Object {
+        $PotentialWinPEUPTPUtility = Get-ChildItem -Path $Path -Filter $PSItem  | Select-Object -ExpandProperty FullName
+        if ($PotentialWinPEUPTPUtility.Count -eq 1){
+            $WinPEUPTPUtility = $PotentialWinPEUPTPUtility
+            Write-CMLogEntry -Value "Found WinPEUPTP utility at $WinPEUPTPUtility" -Severity 1
         }
     }
 
@@ -141,6 +152,7 @@ Process {
         $PotentialWinUPTPUtility = Get-ChildItem -Path $Path -Filter $PSItem  | Select-Object -ExpandProperty FullName
         if ($PotentialWinUPTPUtility.Count -eq 1){
             $WinUPTPUtility = $PotentialWinUPTPUtility
+            Write-CMLogEntry -Value "Found WinUPTP utility at $WinUPTPUtility" -Severity 1
         }
     }
 
@@ -149,15 +161,42 @@ Process {
         $PotentialFlashCMDUtility = Get-ChildItem -Path $Path -Filter $PSItem  | Select-Object -ExpandProperty FullName
         if ($PotentialFlashCMDUtility.Count -eq 1){
             $FlashCMDUtility = $PotentialFlashCMDUtility
+            Write-CMLogEntry -Value "Found FlashCMD utility at $FlashCMDUtility" -Severity 1
         }
     }
 
+    
 
     if ($WinUPTPUtility -ne $null) {
         # Set required switches for silent upgrade of the bios and logging
-        Write-CMLogEntry -Value "Using WinUTPT BIOS update method" -Severity 1
+        Write-CMLogEntry -Value "Using WinUPTP BIOS update method" -Severity 1
         $FlashSwitches = " /S"
         $FlashUtility = $WinUPTPUtility
+        if (-not ([System.String]::IsNullOrEmpty($Password))) {
+            # Add password to the flash bios switches
+            $FlashSwitches = $FlashSwitches + " /w `"$($Password)`""
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<Password Removed>")" -Severity 1
+        }
+        else {
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
+        }
+    }
+
+    if ($WinPEUPTPUtility -ne $null -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
+        # Set required switches for silent upgrade of the bios and logging
+        Write-CMLogEntry -Value "Using WinPEUPTP BIOS update method" -Severity 1
+        $FlashSwitches = " /S"
+        $FlashUtility = $WinPEUPTPUtility
+
+        if (-not ([System.String]::IsNullOrEmpty($Password))) {
+            # Add password to the flash bios switches
+            $FlashSwitches = $FlashSwitches + " /w `"$($Password)`""
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<Password Removed>")" -Severity 1
+        }
+        else {
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
+        }
+        $DriveLoadProcess = Start-Process -FilePath drvload -ArgumentList "X:\Windows\INF\Battery.inf" -PassThru -Wait
     }
 
     if ($FlashCMDUtility -ne $null) {
@@ -165,43 +204,61 @@ Process {
         Write-CMLogEntry -Value "Using FlashCMDUtility BIOS update method" -Severity 1
         $FlashSwitches = " /quiet /sccm /ign"
         $FlashUtility = $FlashCMDUtility
+
+        if (-not ([System.String]::IsNullOrEmpty($Password))) {
+            # Add password to the flash bios switches
+            $FlashSwitches = $FlashSwitches + " /pass:$($Password)"
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<Password Removed>")" -Severity 1
+        }
+        else {
+            Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
+        }
     }
 
     if (-not ($FlashUtility)) {
         Write-CMLogEntry -Value "Supported upgrade utility was not found." -Severity 3; break
     }
 
-    if (-not ([System.String]::IsNullOrEmpty($Password))) {
-        # Add password to the flash bios switches
-        $FlashSwitches = $FlashSwitches + " /pass:$($Password)"
-        Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches -replace $Password, "<Password Removed>")" -Severity 1
-    }
-    else {
-        Write-CMLogEntry -Value "Using the following switches for BIOS file: $($FlashSwitches)" -Severity 1
-    }
+
 
     # Set log file location
     $LogFilePath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath $LogFileName
 
     if (($TSEnvironment -ne $null) -and ($TSEnvironment.Value("_SMSTSinWinPE") -eq $true)) {
-        try {
-            # Start flash update process
-            $FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$FlashSwitches" -PassThru -Wait
+        Write-CMLogEntry -Value "Skipping Lenovo BIOS updates during WinPE. Exiting with code 1 (Will retry in FullOS)" -Severity 3; exit 1
+        # try {
+        #     # Start flash update process
+        #     $FlashProcess = Start-Process -FilePath $FlashUtility -ArgumentList "$FlashSwitches" -PassThru -Wait
 
-            #Output Exit Code for testing purposes
-            $FlashProcess.ExitCode | Out-File -FilePath $LogFilePath
+        #     #Output Exit Code for testing purposes
+        #     $FlashProcess.ExitCode | Out-File -FilePath $LogFilePath
 
-            #Get winuptp.log file
-            $WinUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "winuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-            if ($WinUPTPLog -ne $null) {
-                Write-CMLogEntry -Value "winuptp.log file path is $($WinUPTPLog)" -Severity 1
-                $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "winuptp.log"
-                Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
-            }
-        }
-        catch [System.Exception] {
-            Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
-        }
+        #     #Get winuptp.log file
+        #     $WinUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "winuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        #     if ($WinUPTPLog -ne $null) {
+        #         Write-CMLogEntry -Value "winuptp.log file path is $($WinUPTPLog)" -Severity 1
+        #         $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "winuptp.log"
+        #         Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+        #     }
+        #     ## Copy winpeuptp log file
+        #     $WinPEUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "Winpeuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        #     if ($WinPEUPTPLog -ne $null) {
+        #         Write-CMLogEntry -Value "winpeuptp.log file path is $($WinPEUPTPLog)" -Severity 1
+        #         $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "Winpeuptp.log"
+        #         Copy-Item -Path $WinPEUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+        #     }
+
+        #     # get winflashgui log file, seems to be 'update.log'
+        #     $WinFlashLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "update.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        #     if ($WinFlashLog -ne $null) {
+        #         Write-CMLogEntry -Value "update.log file path is $($WinFlashLog)" -Severity 1
+        #         $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "update.log"
+        #         Copy-Item -Path $WinFlashLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+        #     }
+        # }
+        # catch [System.Exception] {
+        #     Write-CMLogEntry -Value "An error occured while updating the system BIOS in OS online phase. Error message: $($_.Exception.Message)" -Severity 3; exit 1
+        # }
     }
     else {
         # Detect Bitlocker Status
@@ -225,6 +282,30 @@ Process {
 
             # Output Exit Code for testing purposes
             $FlashProcess.ExitCode | Out-File -FilePath $LogFilePath
+
+            
+            #Get winuptp.log file
+            $WinUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "winuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            if ($WinUPTPLog -ne $null) {
+                Write-CMLogEntry -Value "winuptp.log file path is $($WinUPTPLog)" -Severity 1
+                $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "winuptp.log"
+                Copy-Item -Path $WinUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+            }
+            ## Copy winpeuptp log file
+            $WinPEUPTPLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "Winpeuptp.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            if ($WinPEUPTPLog -ne $null) {
+                Write-CMLogEntry -Value "winpeuptp.log file path is $($WinPEUPTPLog)" -Severity 1
+                $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "Winpeuptp.log"
+                Copy-Item -Path $WinPEUPTPLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+            }
+
+            # get winflashgui log file, seems to be 'update.log'
+            $WinFlashLog = Get-ChildItem -Filter "*.log" -Recurse | Where-Object { $_.Name -like "update.log" } -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            if ($WinFlashLog -ne $null) {
+                Write-CMLogEntry -Value "update.log file path is $($WinFlashLog)" -Severity 1
+                $SMSTSLogPath = Join-Path -Path $TSEnvironment.Value("_SMSTSLogPath") -ChildPath "update.log"
+                Copy-Item -Path $WinFlashLog -Destination $SMSTSLogPath -Force -ErrorAction SilentlyContinue
+            }
         }
         catch [System.Exception] {
             Write-Warning -Message "An error occured while updating the system bios. Error message: $($_.Exception.Message)"; exit 1
