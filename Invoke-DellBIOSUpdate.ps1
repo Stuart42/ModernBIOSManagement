@@ -39,6 +39,7 @@
 	1.1.0 - (2019-05-14) Handle log output correctly if $Password is not specified
     1.2.1 - (2022-07-22) 	-Added support for systems without a Flash64 option
                             -Added detection of battery issues for non-flash64 systems and retry with /forceit
+	1.2.4 - (2025-05-02) Improved logging for use of /forceit switch, improves reliability
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
@@ -150,7 +151,7 @@ Process {
 
                         # Set reboot flag if restart required determined (exit code 2)
 
-
+                        Write-CMLogEntry -Value "Flash process complete, exit code is $($FlashProcess.ExitCode) - Evaluating next steps" -Severity 1
                         switch ($FlashProcess.ExitCode) {
                             "0" {
                                 # Set reboot required flag
@@ -163,19 +164,20 @@ Process {
                                 $TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
                             }
                             "10" {
-                                Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3 #; exit 1
-                                $ResultsArray = (Get-Content $BIOSLogFile).Split(':')
-                                if ($ResultsArray -like $BatteryError) {
-                                    Write-CMLogEntry -Value "Battery error detected (below 10%), adding /forceit switch and retrying" -Severity 2
-                                    $FlashSwitches = $FlashSwitches + " /forceit"
-                                    $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
+                                Write-CMLogEntry -Value "Laptop is likely on battery power or has incorrect adapter. The AC power must be connected to successfully flash the BIOS. Trying with /forceit anyway" -Severity 3
+                                $FlashSwitches = $FlashSwitches + " /forceit"
+                                $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
+
+                                if ($FlashUpdate.ExitCode -ne 10)
+                                {
+                                    Write-CMLogEntry -Value "Laptop is likely on battery power. Retried the update with /forceit switch. Failed. Exiting" -Severity 2    
+                                    # Set reboot required flag
+                                    $TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+                                    $TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+                                } else {
+                                    Write-CMLogEntry -Value "Laptop is likely on battery power or has incorrect adapter. Retried the update with /forceit switch. Failed. Exiting" -Severity 2; exit 1
                                 }
-                                elseif ($ResultsArray -like $BatteryandPowerError) {
-                                    Write-CMLogEntry -Value "Battery error detected (no battery or power connection detected), adding /forceit switch and retrying" -Severity 2
-                                    $FlashSwitches = $FlashSwitches + " /forceit"
-                                    $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
-                                }
-                                Write-CMLogEntry -Value "Laptop is on battery power. Retried the update with /forceit switch." -Severity 2; exit 1
+                                
                             }
                             default {
                                 Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 1
@@ -188,7 +190,7 @@ Process {
                     }
                 }
                 else {
-                    # Used as a fall back for systems that do not support the Flash64w update tool
+
                     # Used in a later section of the task sequence (after Setup Windows and ConfigMgr step)
 
                     Write-CMLogEntry -Value "Current environment is determined as FullOS" -Severity 1
@@ -206,8 +208,7 @@ Process {
                     # Start BIOS update process
                     try {
                         if (([Environment]::Is64BitOperatingSystem) -eq $true) {
-                            $BatteryError = 'Error: The battery must be charged above 10% before the system BIOS can be flashed.'
-                            $BatteryandPowerError = 'Error: The AC adapter and battery must be plugged in before the system BIOS can be flashed.'
+
                             Write-CMLogEntry -Value "Starting 64-bit flash BIOS update process" -Severity 1
                             if (-not ([System.String]::IsNullOrEmpty($Password))) {
                                 Write-CMLogEntry -Value "Using the following switches for $FlashUtility $($FlashSwitches -replace $Password, "<password removed>")" -Severity 1
@@ -219,6 +220,7 @@ Process {
                             # Update BIOS using Flash64W.exe
                             $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
 
+                            Write-CMLogEntry -Value "Flash process complete, exit code is $($FlashProcess.ExitCode) - Evaluating next steps" -Severity 1
                             switch ($FlashUpdate.ExitCode) {
                                 "0" {
                                     # Set reboot required flag
@@ -231,19 +233,20 @@ Process {
                                     $TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
                                 }
                                 "10" {
-                                    Write-CMLogEntry -Value "Laptop is on battery power. The AC power must be connected to successfully flash the BIOS." -Severity 3#; exit 1
-                                    $ResultsArray = (Get-Content $BIOSLogFile).Split(':')
-                                    if ($ResultsArray -like $BatteryError) {
-                                        Write-CMLogEntry -Value "Battery error detected (below 10%), adding /forceit switch and retrying" -Severity 2
-                                        $FlashSwitches = $FlashSwitches + " /forceit"
-                                        $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
+                                    Write-CMLogEntry -Value "Laptop is likely on battery power or has incorrect adapter. The AC power must be connected to successfully flash the BIOS. Trying with /forceit anyway" -Severity 3
+                                    $FlashSwitches = $FlashSwitches + " /forceit"
+                                    $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
+
+                                    if ($FlashUpdate.ExitCode -ne 10)
+                                    {
+                                        Write-CMLogEntry -Value "Laptop is likely on battery power. Retried the update with /forceit switch. Failed. Exiting" -Severity 2    
+                                        # Set reboot required flag
+                                        $TSEnvironment.Value("SMSTSBIOSUpdateRebootRequired") = "True"
+                                        $TSEnvironment.Value("SMSTSBIOSInOSUpdateRequired") = "False"
+                                    } else {
+                                        Write-CMLogEntry -Value "Laptop is likely on battery power or has incorrect adapter. Retried the update with /forceit switch. Failed. Exiting" -Severity 2; exit 1
                                     }
-                                    elseif ($ResultsArray -like $BatteryandPowerError) {
-                                        Write-CMLogEntry -Value "Battery error detected (no battery or power connection detected), adding /forceit switch and retrying" -Severity 2
-                                        $FlashSwitches = $FlashSwitches + " /forceit"
-                                        $FlashUpdate = Start-Process -FilePath $FlashUtility -ArgumentList $FlashSwitches -PassThru -Wait -ErrorAction Stop
-                                    }
-                                    Write-CMLogEntry -Value "Laptop is on battery power. Retried the update with /forceit switch." -Severity 2; exit 1
+                                    
                                 }
                                 default {
                                     Write-CMLogEntry -Value "An error occured while updating the system BIOS during OS offline phase. Please review the log file located at $($BIOSLogFile)" -Severity 3; exit 1
@@ -251,6 +254,7 @@ Process {
                             }
                         }
                         else {
+                            ## Upgrade in 32-bit OS
                             # Set required switches for silent upgrade of the BIOS
                             $FileSwitches = " /l=$($BIOSLogFile) /s"
 
@@ -284,6 +288,8 @@ Process {
             }
         }
         else {
+            # Used as a fall back for systems that do not support the Flash64w update tool
+
             $CurrentBIOSFile = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { $_.Name -match ".exe" } | Select-Object -ExpandProperty FullName
 
             Write-CMLogEntry -Value "Unable to locate the Flash64W.exe utility trying Manual Install" -Severity 1;
@@ -304,7 +310,7 @@ Process {
                 }
             }
 
-            Write-CMLogEntry -Value "Starting 32-bit flash BIOS update process" -Severity 1
+            Write-CMLogEntry -Value "Starting manual flash BIOS update process (non flash exe)" -Severity 1
             if (-not ([System.String]::IsNullOrEmpty($Password))) {
                 Write-CMLogEntry -Value "Using the following switches for BIOS file $CurrentBIOSFile  : $($FileSwitches -replace $Password, "<password removed>")" -Severity 1
             }
